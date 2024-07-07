@@ -12,13 +12,13 @@ struct CameraView: UIViewControllerRepresentable {
         // Initialize the CameraController
         let cameraController = CameraController()
         // Set the selected diet type in the CameraController
-        cameraController.selectedDiet = selectedDiet
+        //cameraController.selectedDiet = selectedDiet
         return cameraController // Return the configured CameraController
     }
 
     // Function to update the UIViewController when the SwiftUI state changes
     func updateUIViewController(_ uiViewController: CameraController, context: Context) {
         // Update the selected diet type in the CameraController
-        uiViewController.selectedDiet = selectedDiet
+        //uiViewController.selectedDiet = selectedDiet
     }
 }

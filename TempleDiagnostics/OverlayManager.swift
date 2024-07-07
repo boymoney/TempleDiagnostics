@@ -12,7 +12,7 @@ class OverlayManager {
         let scaleY = (screenSize.height / imageHeight)
 
         for recognizedTextAndBox in recognizedTextsAndBoxes {
-            if recognizedTextAndBox.text == "Fresh Lemonade"{
+            //if recognizedTextAndBox.text == "Fresh Lemonade"{
                 let boundingBox = recognizedTextAndBox.boundingBox
 
                             // Convert the normalized coordinates to image coordinates
@@ -31,7 +31,7 @@ class OverlayManager {
 
                             // Add the label to the view
                             view.addSubview(label)
-            }
+            //}
             
         }
 

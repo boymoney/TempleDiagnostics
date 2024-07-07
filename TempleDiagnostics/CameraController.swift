@@ -1,90 +1,132 @@
 import UIKit
 import AVFoundation
+import Vision
+import NaturalLanguage
 
-// Main view controller for handling camera functionality and text recognition
-class CameraController: UIViewController {
-    var overlayView: CameraOverlayView! // Overlay view to display recommendations
-    var textRecognitionManager: TextRecognitionManager! // Manager for text recognition
-    var overlayManager: OverlayManager! // Manager for overlay updates
-    var selectedDiet: DietType = .keto // Default diet type
+class CameraController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate {
+    var captureSession: AVCaptureSession!
+    var previewLayer: AVCaptureVideoPreviewLayer!
     
-    private var captureSession: AVCaptureSession! // Session to coordinate the flow of data from the camera
-    private var videoPreviewLayer: AVCaptureVideoPreviewLayer! // Layer to display the camera input
-    
+    var textRecognitionRequest = VNRecognizeTextRequest()
+    var trackedTextObservations = [VNDetectedObjectObservation]()
+    var boundingBoxViews = [String: UIView]()
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCamera() // Setup the camera
-        
-        // Initialize and add the overlay view
-        overlayView = CameraOverlayView(frame: self.view.frame)
-        self.view.addSubview(overlayView)
-        
-        // Initialize managers
-        let dietRecommendationManager = DietRecommendationManager(selectedDiet: selectedDiet)
-        let fileManagerHelper = FileManagerHelper()
-        textRecognitionManager = TextRecognitionManager(dietRecommendationManager: dietRecommendationManager, fileManagerHelper: fileManagerHelper)
-        overlayManager = OverlayManager()
+        setupCamera()
+        setupVision()
     }
-    
-    // Function to setup the camera
-    private func setupCamera() {
+
+    func setupCamera() {
         captureSession = AVCaptureSession()
-        captureSession.sessionPreset = .high // Set the session preset to high quality
-        
-        // Ensure the back camera is available
-        guard let backCamera = AVCaptureDevice.default(for: AVMediaType.video) else {
-            print("Unable to access back camera!")
-            return
+        captureSession.sessionPreset = .high
+
+        guard let camera = AVCaptureDevice.default(for: .video) else { return }
+        guard let input = try? AVCaptureDeviceInput(device: camera) else { return }
+        captureSession.addInput(input)
+
+        let videoOutput = AVCaptureVideoDataOutput()
+        videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
+        captureSession.addOutput(videoOutput)
+
+        previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+        previewLayer.frame = view.frame
+        previewLayer.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(previewLayer)
+
+        captureSession.startRunning()
+    }
+
+    func setupVision() {
+        textRecognitionRequest = VNRecognizeTextRequest { [weak self] (request, error) in
+            guard let results = request.results as? [VNRecognizedTextObservation] else { return }
+            self?.handleTextRecognitionResults(results)
         }
-        
+        textRecognitionRequest.recognitionLevel = .accurate
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+
         do {
-            // Add the back camera as an input to the capture session
-            let input = try AVCaptureDeviceInput(device: backCamera)
-            captureSession.addInput(input)
-            
-            // Setup output to capture video frames
-            let output = AVCaptureVideoDataOutput()
-            output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
-            captureSession.addOutput(output)
-            
-            // Setup the preview layer to display the camera input
-            videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-            videoPreviewLayer.videoGravity = .resizeAspectFill
-            videoPreviewLayer.frame = view.layer.bounds
-            view.layer.insertSublayer(videoPreviewLayer, at: 0)
-            
-            // Start running the capture session
-            captureSession.startRunning()
+            try requestHandler.perform([textRecognitionRequest])
         } catch {
-            print("Error setting up the camera: \(error)")
+            print("Failed to perform request: \(error)")
         }
     }
-    
-    // Function to process recognized text
-   
-    func processRecognizedText(_ texts: [(String, CGRect)], pixelBuffer: CVPixelBuffer) {
-        textRecognitionManager.processRecognizedText(texts) { [weak self] recommendations in
-            // Update the overlay with recognized texts, recommendations, and possibly using the pixelBuffer on the main thread
-            DispatchQueue.main.async {
-                self?.overlayManager.updateOverlay(on: self?.overlayView ?? UIView(), with: texts, recommendations: recommendations, pixelBuffer: pixelBuffer)
+
+    func handleTextRecognitionResults(_ results: [VNRecognizedTextObservation]) {
+        DispatchQueue.main.async { [weak self] in
+            let filteredResults = self?.filterMenuItems(from: results) ?? []
+            self?.updateBoundingBoxes(for: filteredResults)
+        }
+    }
+
+    func filterMenuItems(from observations: [VNRecognizedTextObservation]) -> [VNRecognizedTextObservation] {
+        var filteredObservations = [VNRecognizedTextObservation]()
+        
+        for observation in observations {
+            guard let topCandidate = observation.topCandidates(1).first else { continue }
+            let recognizedText = topCandidate.string
+            if isMenuItem(text: recognizedText) {
+                filteredObservations.append(observation)
             }
         }
+        
+        return filteredObservations
     }
 
-}
-
-// Extension to handle video output and text recognition
-extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
-    // Delegate method called when a new video frame is available
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Extract the image buffer from the sample buffer
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
+    func isMenuItem(text: String) -> Bool {
+        let tagger = NLTagger(tagSchemes: [.lexicalClass, .nameTypeOrLexicalClass])
+        tagger.string = text
+        
+        let options: NLTagger.Options = [.omitPunctuation, .omitWhitespace, .joinNames]
+        var isMenuItem = false
+        
+        // Check if the text contains any digits, which would likely be a price or a number
+        if text.rangeOfCharacter(from: .decimalDigits) != nil {
+            return false
         }
         
-        // Recognize text from the image buffer
-        textRecognitionManager.recognizeText(from: pixelBuffer) { [weak self] recognizedTexts, pixelBuffer in
-            self?.processRecognizedText(recognizedTexts, pixelBuffer: pixelBuffer) // Process the recognized text
+        // Enumerate lexical classes and check if it contains nouns or other relevant words
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass, options: options) { tag, tokenRange in
+            if let tag = tag, tag == .noun || tag == .otherWord {
+                isMenuItem = true
+                return false // Stop enumerating
+            }
+            return true // Continue enumerating
+        }
+        
+        return isMenuItem
+    }
+
+    func updateBoundingBoxes(for observations: [VNRecognizedTextObservation]) {
+        // Remove all bounding box views that are not in the new observations
+        for (text, boundingBoxView) in boundingBoxViews {
+            if !observations.contains(where: { $0.topCandidates(1).first?.string == text }) {
+                boundingBoxView.removeFromSuperview()
+                boundingBoxViews.removeValue(forKey: text)
+            }
+        }
+
+        // Update or add new bounding box views
+        for observation in observations {
+            guard let topCandidate = observation.topCandidates(1).first else { continue }
+            let recognizedText = topCandidate.string
+
+            let boundingBox = observation.boundingBox
+            let convertedRect = previewLayer.layerRectConverted(fromMetadataOutputRect: boundingBox)
+
+            if let boundingBoxView = boundingBoxViews[recognizedText] {
+                boundingBoxView.frame = convertedRect
+            } else {
+                let newBoundingBoxView = UIView(frame: convertedRect)
+                newBoundingBoxView.layer.borderColor = UIColor.red.cgColor
+                newBoundingBoxView.layer.borderWidth = 2
+                view.addSubview(newBoundingBoxView)
+                boundingBoxViews[recognizedText] = newBoundingBoxView
+            }
         }
     }
 }
