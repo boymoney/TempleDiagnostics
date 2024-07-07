@@ -1,16 +1,11 @@
-//
-//  TempleDiagnosticsApp.swift
-//  TempleDiagnostics
-//
-//  Created by David Carnivale on 7/6/24.
-//
-
 import SwiftUI
 
 @main
 struct TempleDiagnosticsApp: App {
+    // The main entry point of the app
     var body: some Scene {
         WindowGroup {
+            // The main content view of the app
             ContentView()
         }
     }
